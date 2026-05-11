@@ -2,12 +2,6 @@
 
 Simple, reusable setup for GitHub Copilot CLI experimental statusline.
 
-## Goals
-
-- Keep setup simple.
-- Show useful statusline metrics that are actually available in Copilot CLI payloads.
-- Provide reproducible runtime verification with tmux.
-
 ## What it shows
 
 `scripts/statusline.sh` prints:
