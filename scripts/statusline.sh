@@ -5,20 +5,24 @@
 payload="$(cat)"
 
 # ── Parse fields ────────────────────────────────────────────────────────────
-model="$(printf '%s' "$payload" | jq -r '.model.display_name // .model.id // "?"')"
-cwd="$(printf '%s' "$payload" | jq -r '.workspace.current_dir // .cwd // "?"')"
+IFS=$'\037' read -r model cwd session_name premium_req ctx_pct ctx_cur ctx_lim last_in last_out < <(
+  printf '%s' "$payload" | jq -r '[
+    (.model.display_name // .model.id // "?"),
+    (.workspace.current_dir // .cwd // "?"),
+    (.session_name // ""),
+    (.cost.total_premium_requests // 0 | tostring),
+    (.context_window.current_context_used_percentage // .context_window.used_percentage // ""),
+    (.context_window.current_context_tokens // 0 | tostring),
+    (.context_window.displayed_context_limit // .context_window.context_window_size // 0 | tostring),
+    (.context_window.last_call_input_tokens // 0 | tostring),
+    (.context_window.last_call_output_tokens // 0 | tostring)
+  ] | join("\u001f")'
+)
 cwd="${cwd/#$HOME/~}"
 # Truncate long paths keeping the rightmost components
 if [[ ${#cwd} -gt 32 ]]; then
   cwd="…${cwd: -29}"
 fi
-session_name="$(printf '%s' "$payload" | jq -r '.session_name // empty // ""')"
-premium_req="$(printf '%s' "$payload" | jq -r '.cost.total_premium_requests // 0')"
-ctx_pct="$(printf '%s' "$payload" | jq -r '.context_window.current_context_used_percentage // .context_window.used_percentage // empty')"
-ctx_cur="$(printf '%s' "$payload" | jq -r '.context_window.current_context_tokens // 0')"
-ctx_lim="$(printf '%s' "$payload" | jq -r '.context_window.displayed_context_limit // .context_window.context_window_size // 0')"
-last_in="$(printf '%s' "$payload" | jq -r '.context_window.last_call_input_tokens // 0')"
-last_out="$(printf '%s' "$payload" | jq -r '.context_window.last_call_output_tokens // 0')"
 
 # ── Formatting helpers ──────────────────────────────────────────────────────
 # Powerline arrow separators (requires Nerd Fonts / powerline-patched font)
