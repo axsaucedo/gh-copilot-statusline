@@ -28,19 +28,22 @@ mkdir -p "$TMP_DIR" "$COPILOT_HOME"
 # statusline — it pollutes the visual).
 cat > "$PROBE_SCRIPT" <<'PROBE'
 #!/usr/bin/env bash
+set -euo pipefail
 payload="$(cat)"
 PAYLOADS_LOG_="__PAYLOADS_LOG__"
 PAYLOAD_PATH_="__PAYLOAD_PATH__"
+STATUSLINE_SCRIPT_="__STATUSLINE_SCRIPT__"
 printf '%s\n' "$payload" >> "$PAYLOADS_LOG_"
 printf '%s\n' "$payload" > "$PAYLOAD_PATH_"
 # Forward to the real statusline so we can see it render
-exec "$(dirname "$0")/../../scripts/statusline.sh" <<< "$payload"
+exec "$STATUSLINE_SCRIPT_" <<< "$payload"
 PROBE
 
 # Substitute in actual paths (avoids variable expansion quoting issues)
 sed -i '' \
   -e "s|__PAYLOADS_LOG__|${PAYLOADS_LOG}|g" \
   -e "s|__PAYLOAD_PATH__|${PAYLOAD_PATH}|g" \
+  -e "s|__STATUSLINE_SCRIPT__|${ROOT_DIR}/scripts/statusline.sh|g" \
   "$PROBE_SCRIPT"
 chmod +x "$PROBE_SCRIPT"
 
@@ -69,12 +72,30 @@ mv "$tmp_json" "$SETTINGS_PATH"
 
 rm -f "$PAYLOAD_PATH" "$PAYLOADS_LOG" "$TMUX_LOG"
 
-# Start Copilot in a detached tmux window
-tmux new-session -d -s "$SESSION_NAME" -x 220 -y 40 "cd \"$ROOT_DIR\" && copilot --allow-all"
-sleep 5   # wait for Copilot to load and render first (cold) statusline
+# Start Copilot in a detached tmux window with a prefilled prompt. This is more
+# reliable under tmux than trying to type into the interactive prompt.
+tmux new-session -d -s "$SESSION_NAME" -x 220 -y 40 "cd \"$ROOT_DIR\" && copilot -i 'Reply with exactly: TEST_OK' --allow-all"
+PANE_ID="$(tmux list-panes -t "$SESSION_NAME" -F '#{pane_id}' | head -n 1)"
 
-# Send a simple prompt that will complete quickly
-tmux send-keys -t "$SESSION_NAME" "Reply with exactly: TEST_OK" Enter
+echo "Waiting for Copilot prompt..."
+prompt_ready=0
+for _ in $(seq 1 30); do
+  if tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -q '❯'; then
+    prompt_ready=1
+    break
+  fi
+  sleep 1
+done
+if (( prompt_ready == 0 )); then
+  tmux capture-pane -t "$PANE_ID" -p > "$TMUX_LOG" 2>/dev/null || true
+  echo "FAIL: Copilot prompt did not become ready within 30s."
+  echo "tmux log: $TMUX_LOG"
+  exit 1
+fi
+sleep 1
+
+# Submit the prefilled prompt (or accept the one-time trust prompt first).
+tmux send-keys -t "$PANE_ID" C-m
 
 echo "Waiting up to ${POLL_TIMEOUT}s for a post-response payload (req >= 1)..."
 elapsed=0
@@ -87,8 +108,7 @@ while (( elapsed < POLL_TIMEOUT )); do
     continue
   fi
 
-  req="$(jq -r '.cost.total_premium_requests // 0' "$PAYLOAD_PATH" 2>/dev/null || echo 0)"
-  if (( req >= 1 )); then
+  if jq -e '(.cost.total_premium_requests // 0) >= 1' "$PAYLOAD_PATH" >/dev/null 2>&1; then
     got_real_payload=1
     break
   fi
@@ -117,7 +137,7 @@ ctx_lim="$(jq -r '.context_window.displayed_context_limit // 0' "$PAYLOAD_PATH")
 
 assert_gt() {
   local label="$1" val="$2" threshold="$3"
-  if ! (( val > threshold )); then
+  if ! awk -v val="$val" -v threshold="$threshold" 'BEGIN { exit !(val + 0 > threshold + 0) }'; then
     echo "  FAIL: expected ${label} > ${threshold}, got ${val}"
     fail=1
   else
